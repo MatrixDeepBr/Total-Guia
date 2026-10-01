@@ -1,4 +1,4 @@
-const CACHE_NAME = 'orcamentos-collornew-v9';
+const CACHE_NAME = 'orcamentos-collornew-v10';
 const APP_SHELL = [
   './index.html',
   './manifest.json',

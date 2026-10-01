@@ -386,6 +386,7 @@ const state = {
     seqPedido:0,
     mostrarGraficoInicio:true,
     fasesAtivas:{entrega:true, a_receber:true},
+    relatorioCampos:{custo:false, lucro:false, comissao:false, fornecedor:false, materiais:false},
     lastBackupDate:"", theme:"win7",
     fornecedores:["Uzze Collor"],
     parceladoPadraoIdx:0
@@ -416,7 +417,7 @@ function newBudget(){
     priceIdx:0, installIdx:defaultInstallIdx, parcelamentoOn:true,
     sections:[ {title:"Fase 1", items:[], parcelOn:true} ],
     cardFee:{on:false,type:"%",value:""}, notaFee:{on:false,type:"%",value:""},
-    discount:{on:false,type:"%",value:""}
+    discount:{on:false,type:"%",value:""}, observacoes:""
   };
 }
 
@@ -850,9 +851,9 @@ function renderInicio(){
 function resumoMes(offsetMonths){
   const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()-offsetMonths);
   const ano = d.getFullYear(), mes = d.getMonth();
-  const doMes = state.pedidos.filter(p=>{ const pd=new Date(p.createdAt); return pd.getFullYear()===ano && pd.getMonth()===mes && p.status!=='cancelado' && p.status!=='orcamento'; });
+  const doMes = state.pedidos.filter(p=>{ const mf=mesFechamentoPedido(p); return mf.ano===ano && mf.mes===mes && p.status!=='cancelado' && p.status!=='orcamento'; });
   const gasto = doMes.reduce((s,p)=>s+(p.custoTotal||0),0);
-  const ganho = doMes.reduce((s,p)=>s+(p.margem||0),0);
+  const ganho = doMes.reduce((s,p)=>s+(p.margem||0)-(p.comissaoPintor||0),0);
   const vendido = doMes.reduce((s,p)=>s+(p.total||0),0);
   return { label: `${MES_NOMES[mes]}/${ano}`, gasto, ganho, vendido };
 }
@@ -1019,6 +1020,10 @@ function renderOrcamento(){
       <div class="line grand" style="font-size:17px;"><span>Margem</span><span class="num">R$ ${money(t.margem)} (${t.margemPercent.toFixed(1)}%)</span></div>
     </div>
   </div>
+  <div class="card">
+    <div class="eyebrow">Observações (aparece no PDF do orçamento)</div>
+    <textarea data-act="observacoes" rows="3" placeholder="Ex: cores podem variar conforme o lote, prazo sujeito a disponibilidade de material...">${escapeHtml(b.observacoes||'')}</textarea>
+  </div>
   <div class="row">
     <button class="btn-ghost btn-block" data-act="resetbudget">Limpar tudo</button>
     <button class="btn-secondary btn-block" data-act="salvarorc">${b.editingId?'Atualizar orçamento':'Salvar orçamento'}</button>
@@ -1105,6 +1110,7 @@ function wireTabEvents(){
   const disVal = app.querySelector('[data-act=discval]'); if(disVal) disVal.addEventListener('input', e=>{ b.discount.value=e.target.value; renderTotalsOnly(); });
 
   const rb = app.querySelector('[data-act=resetbudget]'); if(rb) rb.addEventListener('click', ()=>{ if(confirm('Limpar todo o orçamento atual?')){ state.budget=newBudget(); render(); } });
+  const obsEl = app.querySelector('[data-act=observacoes]'); if(obsEl) obsEl.addEventListener('input', e=>{ b.observacoes = e.target.value; });
   const svb = app.querySelector('[data-act=salvarorc]'); if(svb) svb.addEventListener('click', ()=>{ salvarOrcamento(); });
   const pdfbtn = app.querySelector('[data-act=gerarpdf]'); if(pdfbtn) pdfbtn.addEventListener('click', gerarPDF);
   const convbtn = app.querySelector('[data-act=converterpedido]'); if(convbtn) convbtn.addEventListener('click', converterOrcamentoEmPedido);
@@ -1223,11 +1229,15 @@ function buildPedidoFromBudget(existingId){
     sections: JSON.parse(JSON.stringify(b.sections)),
     cardFee: JSON.parse(JSON.stringify(b.cardFee)), notaFee: JSON.parse(JSON.stringify(b.notaFee)),
     discount: JSON.parse(JSON.stringify(b.discount||{on:false,type:'%',value:''})),
+    observacoes: b.observacoes||'',
     subtotal:t.subtotal, total:t.total, custoTotal:t.custoTotal, margem:t.margem, margemPercent:t.margemPercent,
     parcelPercentRaw:t.parcelPercentRaw, parcelaAddValor: t.parcelaAdd,
     prazoDias: existing&&existing.prazoDias ? existing.prazoDias : 5,
     valorFornecedor: existing?existing.valorFornecedor:0,
-    fornecedorPago: existing?!!existing.fornecedorPago:false
+    fornecedorPago: existing?!!existing.fornecedorPago:false,
+    comissaoPintor: existing?(existing.comissaoPintor||0):0,
+    comissaoPaga: existing?!!existing.comissaoPaga:false,
+    mesFechamento: existing?(existing.mesFechamento||null):null
   };
 }
 
@@ -1274,7 +1284,8 @@ function carregarPedidoParaEdicao(p){
     sections: JSON.parse(JSON.stringify(p.sections)),
     cardFee: JSON.parse(JSON.stringify(p.cardFee||{on:false,type:'%',value:''})),
     notaFee: JSON.parse(JSON.stringify(p.notaFee||{on:false,type:'%',value:''})),
-    discount: JSON.parse(JSON.stringify(p.discount||{on:false,type:'%',value:''}))
+    discount: JSON.parse(JSON.stringify(p.discount||{on:false,type:'%',value:''})),
+    observacoes: p.observacoes||''
   };
   state.pedidoAberto = null; state.tab='orcamento';
   document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.toggle('active', x.dataset.tab==='orcamento'));
@@ -1458,6 +1469,13 @@ function mesesDisponiveisPedidos(){
 }
 const MES_NOMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
+/* ---------------- mês de fechamento financeiro (competência x caixa) ---------------- */
+function mesFechamentoPedido(p){
+  if(p.mesFechamento && typeof p.mesFechamento.ano==='number' && typeof p.mesFechamento.mes==='number') return p.mesFechamento;
+  const d = new Date(p.createdAt);
+  return { ano: d.getFullYear(), mes: d.getMonth() };
+}
+
 function renderPedidosLista(){
   const filterLabel = { __mes_orc:'Orçamentos do mês', __convertidos:'Convertidos em pedido (mês)', __entregues:'Entregues', __pendentes:'Tudo pendente', __pagpendente:'Pagamentos pendentes', entrega:'Pendentes de entrega', finalizado:'Recebidos / finalizados' }[state.pedidosFilter];
   const mesOptions = mesesDisponiveisPedidos().map(k=>{ const [ano,mes]=k.split('-').map(Number); return `<option value="${k}" ${state.pedidoMesBusca===k?'selected':''}>${MES_NOMES[mes-1]}/${ano}</option>`; }).join('');
@@ -1546,12 +1564,19 @@ function renderPedidoDetalhe(){
       ${p.discount&&p.discount.on?`<div style="display:flex; justify-content:space-between; font-size:13.5px; padding:4px 0; color:var(--danger);"><span>Desconto</span><span class="num">- R$ ${money(calcDescontoPedido(p))}</span></div>`:''}
       <div class="subtotal-row" style="border-top:2px solid var(--ink); font-size:17px;"><span>Total</span><span class="num">R$ ${money(p.total)}</span></div>
     </div>
-    ${p.margem!==undefined ? `<div class="card margin-card ${p.margem<0?'negative':''}">
+    ${p.margem!==undefined ? `<div class="card margin-card ${(p.margem-(p.comissaoPintor||0))<0?'negative':''}">
       <div class="eyebrow">Margem de lucro (só você vê isso)</div>
       <div class="totals">
         <div class="line"><span>Custo total dos produtos</span><span class="num">R$ ${money(p.custoTotal)}</span></div>
-        <div class="line grand" style="font-size:17px;"><span>Margem</span><span class="num">R$ ${money(p.margem)} (${p.margemPercent.toFixed(1)}%)</span></div>
+        <div class="line grand" style="font-size:17px;"><span>Margem (material)</span><span class="num">R$ ${money(p.margem)} (${p.margemPercent.toFixed(1)}%)</span></div>
+        ${(p.comissaoPintor||0)>0?`
+        <div class="line"><span>Comissão de pintor</span><span class="num">- R$ ${money(p.comissaoPintor)}</span></div>
+        <div class="line grand" style="font-size:17px; color:var(--success);"><span>Margem líquida</span><span class="num">R$ ${money(p.margem-p.comissaoPintor)}</span></div>` : ''}
       </div>
+    </div>` : ''}
+    ${p.observacoes?`<div class="card">
+      <div class="eyebrow">📝 Observações</div>
+      <p style="margin:0; white-space:pre-wrap; font-size:13.5px;">${escapeHtml(p.observacoes)}</p>
     </div>` : ''}
     ${p.status!=='orcamento'&&p.status!=='cancelado' ? `
     <div class="card">
@@ -1559,12 +1584,23 @@ function renderPedidoDetalhe(){
       <div class="fee-row"><label class="chk"><span>${p.pago?'✅ Pagamento recebido':'⏳ Pagamento pendente'}</span></label>
         <button class="btn-sm ${p.pago?'btn-ghost':'btn-success'}" data-act="togglepago">${p.pago?'Marcar como pendente':'Marcar como pago'}</button>
       </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:13px;">
+        <span class="muted">Contabilizado em</span>
+        <button class="btn-ghost btn-sm" data-act="trocarmesfechamento">${MES_NOMES[mesFechamentoPedido(p).mes]}/${mesFechamentoPedido(p).ano} · trocar</button>
+      </div>
     </div>
     <div class="card">
       <div class="eyebrow">Pagamento ao fornecedor</div>
       <div class="field"><label>Valor a pagar pelo material</label><input type="number" step="0.01" inputmode="decimal" id="valorFornecedorInput" value="${p.valorFornecedor||''}" placeholder="0,00"></div>
       <div class="fee-row"><label class="chk"><span>${p.fornecedorPago?'✅ Material pago':'⏳ Pagamento pendente ao fornecedor'}</span></label>
         <button class="btn-sm ${p.fornecedorPago?'btn-ghost':'btn-success'}" data-act="togglefornecedorpago">${p.fornecedorPago?'Marcar como pendente':'Material pago'}</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="eyebrow">🎨 Comissão de pintor</div>
+      <div class="field"><label>Valor da comissão</label><input type="number" step="0.01" inputmode="decimal" id="comissaoPintorInput" value="${p.comissaoPintor||''}" placeholder="0,00"></div>
+      <div class="fee-row"><label class="chk"><span>${p.comissaoPaga?'✅ Comissão paga':'⏳ Comissão pendente'}</span></label>
+        <button class="btn-sm ${p.comissaoPaga?'btn-ghost':'btn-success'}" data-act="togglecomissaopaga">${p.comissaoPaga?'Marcar como pendente':'Marcar como paga'}</button>
       </div>
     </div>` : ''}
     <div class="card">
@@ -1632,8 +1668,66 @@ function perguntarPagamento(p){
     <button class="btn-success btn-block" id="pagSim">✅ Já recebi o pagamento</button>
     <button class="btn-ghost btn-block" id="pagNao" style="margin-top:8px;">⏳ Ainda não recebi</button>
   </div></div>`;
-  document.getElementById('pagSim').onclick = async ()=>{ p.pago=true; await savePedidos(); closeModal(); render(); };
+  document.getElementById('pagSim').onclick = async ()=>{ p.pago=true; closeModal(); await confirmarMesFechamento(p); };
   document.getElementById('pagNao').onclick = async ()=>{ p.pago=false; await savePedidos(); closeModal(); render(); };
+}
+async function confirmarMesFechamento(p){
+  const hoje = new Date();
+  const mesVenda = mesFechamentoPedido(p);
+  const mesAtual = { ano: hoje.getFullYear(), mes: hoje.getMonth() };
+  if(mesVenda.ano===mesAtual.ano && mesVenda.mes===mesAtual.mes){
+    const ok = await savePedidos(); if(ok) toast('Pagamento confirmado'); render();
+    return;
+  }
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `<div class="modal-bg center" id="mbg"><div class="modal" style="max-width:360px; text-align:center;">
+    <div style="font-size:30px; margin-bottom:8px;">📅</div>
+    <h3 style="margin-bottom:6px;">Em qual mês contar esse pedido?</h3>
+    <p class="muted" style="margin-bottom:14px;">Ele foi vendido em <b>${MES_NOMES[mesVenda.mes]}/${mesVenda.ano}</b>, e você está recebendo agora, em <b>${MES_NOMES[mesAtual.mes]}/${mesAtual.ano}</b>.</p>
+    <button class="btn-primary btn-block" id="mesVendaBtn">Mês da venda (${MES_NOMES[mesVenda.mes]})</button>
+    <button class="btn-secondary btn-block" id="mesRecBtn" style="margin-top:8px;">Mês do recebimento (${MES_NOMES[mesAtual.mes]})</button>
+  </div></div>`;
+  document.getElementById('mbg').addEventListener('click', e=>{ if(e.target.id==='mbg'){ savePedidos(); closeModal(); render(); } });
+  document.getElementById('mesVendaBtn').onclick = async ()=>{
+    p.mesFechamento = null;
+    const ok = await savePedidos(); if(ok) toast('Pagamento confirmado'); closeModal(); render();
+  };
+  document.getElementById('mesRecBtn').onclick = async ()=>{
+    p.mesFechamento = { ano: mesAtual.ano, mes: mesAtual.mes };
+    const ok = await savePedidos(); if(ok) toast(`Pagamento confirmado — contabilizado em ${MES_NOMES[mesAtual.mes]}/${mesAtual.ano}`); closeModal(); render();
+  };
+}
+function mesFechamentoModal(p){
+  const vd = new Date(p.createdAt);
+  const vendaM = { ano: vd.getFullYear(), mes: vd.getMonth() };
+  const hoje = new Date();
+  const atualM = { ano: hoje.getFullYear(), mes: hoje.getMonth() };
+  const atual = mesFechamentoPedido(p);
+  const root = document.getElementById('modalRoot');
+  root.innerHTML = `<div class="modal-bg center" id="mbg"><div class="modal" style="max-width:360px;">
+    <div class="modal-head" style="margin:-18px -16px 12px -16px;"><h3>Mês de fechamento</h3><button id="mclose">✕</button></div>
+    <p class="muted" style="margin-top:-6px;">Esse pedido está contabilizado em <b>${MES_NOMES[atual.mes]}/${atual.ano}</b>.</p>
+    <button class="btn-primary btn-block" id="btnMesVenda" style="margin-top:6px;">Mês da venda (${MES_NOMES[vendaM.mes]}/${vendaM.ano})</button>
+    <button class="btn-secondary btn-block" id="btnMesAtual" style="margin-top:8px;">Mês atual (${MES_NOMES[atualM.mes]}/${atualM.ano})</button>
+    <div class="row" style="margin-top:14px; align-items:end;">
+      <div class="field" style="margin-bottom:0;"><label>Mês</label><select id="mfMes">${MES_NOMES.map((n,i)=>`<option value="${i}" ${atual.mes===i?'selected':''}>${n}</option>`).join('')}</select></div>
+      <div class="field" style="margin-bottom:0;"><label>Ano</label><input type="number" id="mfAno" value="${atual.ano}"></div>
+    </div>
+    <button class="btn-ghost btn-block" id="btnMesCustom" style="margin-top:8px;">Usar esse mês/ano</button>
+  </div></div>`;
+  document.getElementById('mclose').onclick = closeModal;
+  document.getElementById('mbg').addEventListener('click', e=>{ if(e.target.id==='mbg') closeModal(); });
+  const aplicar = async (mf)=>{
+    p.mesFechamento = mf;
+    const ok = await savePedidos(); if(ok) toast('Mês de fechamento atualizado'); closeModal(); render();
+  };
+  document.getElementById('btnMesVenda').onclick = ()=> aplicar(null);
+  document.getElementById('btnMesAtual').onclick = ()=> aplicar({ano:atualM.ano, mes:atualM.mes});
+  document.getElementById('btnMesCustom').onclick = ()=>{
+    const mes = Number(document.getElementById('mfMes').value);
+    const ano = Number(document.getElementById('mfAno').value)||atual.ano;
+    aplicar({ano, mes});
+  };
 }
 function wirePedidos(){
   const app = document.getElementById('app');
@@ -1657,8 +1751,18 @@ function wirePedidos(){
     });
     const togp = app.querySelector('[data-act=togglepago]'); if(togp) togp.addEventListener('click', async ()=>{
       const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
-      p.pago = !p.pago;
-      const ok = await savePedidos(); if(ok) toast(p.pago?'Marcado como pago':'Marcado como pendente'); render();
+      if(!p.pago){
+        p.pago = true;
+        await confirmarMesFechamento(p);
+      } else {
+        p.pago = false;
+        p.mesFechamento = null;
+        const ok = await savePedidos(); if(ok) toast('Marcado como pendente'); render();
+      }
+    });
+    const tmf = app.querySelector('[data-act=trocarmesfechamento]'); if(tmf) tmf.addEventListener('click', ()=>{
+      const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
+      mesFechamentoModal(p);
     });
     const back2 = app.querySelector('[data-act=voltaretapa]'); if(back2) back2.addEventListener('click', async ()=>{
       const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
@@ -1674,6 +1778,17 @@ function wirePedidos(){
       const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
       p.fornecedorPago = !p.fornecedorPago;
       const ok = await savePedidos(); if(ok) toast(p.fornecedorPago?'Material marcado como pago':'Marcado como pendente'); render();
+    });
+    const cpInput = app.querySelector('#comissaoPintorInput'); if(cpInput) cpInput.addEventListener('change', async e=>{
+      const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
+      p.comissaoPintor = parseNum(e.target.value);
+      await savePedidos();
+      render();
+    });
+    const tcp = app.querySelector('[data-act=togglecomissaopaga]'); if(tcp) tcp.addEventListener('click', async ()=>{
+      const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
+      p.comissaoPaga = !p.comissaoPaga;
+      const ok = await savePedidos(); if(ok) toast(p.comissaoPaga?'Comissão marcada como paga':'Marcado como pendente'); render();
     });
     const canc = app.querySelector('[data-act=cancelar]'); if(canc) canc.addEventListener('click', async ()=>{
       if(confirm('Cancelar este pedido? Ele continuará no sistema como cancelado.')){
@@ -1733,26 +1848,39 @@ function fornecedorDoPedido(p){
 }
 function financeiroKpiData(){
   const fm = financeiroMesAtual();
-  const doMes = state.pedidos.filter(p=>{ const d=new Date(p.createdAt); return d.getFullYear()===fm.ano && d.getMonth()===fm.mes && p.status!=='cancelado' && p.status!=='orcamento'; });
+  const doMes = state.pedidos.filter(p=>{ const mf=mesFechamentoPedido(p); return mf.ano===fm.ano && mf.mes===fm.mes && p.status!=='cancelado' && p.status!=='orcamento'; });
   return {
     doMes,
     recebidosList: doMes.filter(p=>p.status==='finalizado'),
     aReceberList: doMes.filter(p=>p.status==='a_receber'),
     cartaoList: doMes.filter(p=>(p.parcelaAddValor||0)>0),
-    pagoFornecedorList: doMes.filter(p=>p.fornecedorPago)
+    pagoFornecedorList: doMes.filter(p=>p.fornecedorPago),
+    comissaoList: doMes.filter(p=>(p.comissaoPintor||0)>0)
   };
 }
 function renderFinanceiro(){
+  const sub = state.financeiroSubTab || 'geral';
+  return `
+    <div class="subtabs">
+      <button class="${sub==='geral'?'btn-primary':'btn-ghost'}" data-subtab="geral">Visão geral</button>
+      <button class="${sub==='relatorios'?'btn-primary':'btn-ghost'}" data-subtab="relatorios">Relatórios</button>
+    </div>
+    ${sub==='relatorios' ? renderFinanceiroRelatorios() : renderFinanceiroGeral()}
+  `;
+}
+function renderFinanceiroGeral(){
   const fm = financeiroMesAtual();
-  const doMes = state.pedidos.filter(p=>{ const d=new Date(p.createdAt); return d.getFullYear()===fm.ano && d.getMonth()===fm.mes && p.status!=='cancelado' && p.status!=='orcamento'; });
-  const gasto = doMes.reduce((s,p)=>s+(p.custoTotal||0),0);
-  const ganho = doMes.reduce((s,p)=>s+(p.margem||0),0);
+  const doMes = state.pedidos.filter(p=>{ const mf=mesFechamentoPedido(p); return mf.ano===fm.ano && mf.mes===fm.mes && p.status!=='cancelado' && p.status!=='orcamento'; });
+  const gastoMaterial = doMes.reduce((s,p)=>s+(p.custoTotal||0),0);
+  const comissaoTotal = doMes.reduce((s,p)=>s+(p.comissaoPintor||0),0);
+  const gasto = gastoMaterial; // gasto com material, sem contar comissão (tem card próprio)
+  const ganho = doMes.reduce((s,p)=>s+(p.margem||0),0) - comissaoTotal; // lucro líquido, já descontando comissão de pintor
   const recebido = doMes.filter(p=>p.status==='finalizado').reduce((s,p)=>s+p.total,0);
   const aReceber = doMes.filter(p=>p.status==='a_receber').reduce((s,p)=>s+p.total,0);
   const taxaCartao = doMes.reduce((s,p)=>s+(p.parcelaAddValor||0),0);
   const pagoFornecedor = doMes.filter(p=>p.fornecedorPago).reduce((s,p)=>s+(parseNum(p.valorFornecedor)||0),0);
 
-  // controle por fornecedor (pendências de pagamento, agrupadas pelo fornecedor predominante do pedido)
+  // controle por fornecedor (pendências de pagamento, agrupadas pelo fornecedor predominante do pedido) — não é restrito ao mês selecionado
   const pendentesFornecedor = state.pedidos.filter(p=>p.status!=='orcamento' && p.status!=='cancelado' && parseNum(p.valorFornecedor)>0 && !p.fornecedorPago);
   const porFornecedor = {};
   pendentesFornecedor.forEach(p=>{
@@ -1761,6 +1889,10 @@ function renderFinanceiro(){
     porFornecedor[nome].total += parseNum(p.valorFornecedor);
     porFornecedor[nome].pedidos.push(p);
   });
+
+  // comissões de pintor pendentes — também não restrito ao mês selecionado
+  const pendentesComissao = state.pedidos.filter(p=>p.status!=='orcamento' && p.status!=='cancelado' && parseNum(p.comissaoPintor)>0 && !p.comissaoPaga);
+  const totalComissaoPendente = pendentesComissao.reduce((s,p)=>s+parseNum(p.comissaoPintor),0);
 
   return `
   <div class="card">
@@ -1773,11 +1905,12 @@ function renderFinanceiro(){
   <div class="card">
     <div class="grid2">
       <button class="kpi" data-kpi="gasto"><div class="kv num">R$ ${money(gasto)}</div><div class="kl">Gasto com material</div></button>
-      <button class="kpi" data-kpi="lucro"><div class="kv num" style="color:var(--success);">R$ ${money(ganho)}</div><div class="kl">Lucro no mês</div></button>
+      <button class="kpi" data-kpi="lucro"><div class="kv num" style="color:var(--success);">R$ ${money(ganho)}</div><div class="kl">Lucro líquido no mês</div></button>
       <button class="kpi" data-kpi="recebido"><div class="kv num">R$ ${money(recebido)}</div><div class="kl">Já recebido</div></button>
       <button class="kpi" data-kpi="areceber"><div class="kv num" style="color:var(--accent-dark);">R$ ${money(aReceber)}</div><div class="kl">Ainda a receber</div></button>
       <button class="kpi" data-kpi="cartao"><div class="kv num" style="color:var(--info);">R$ ${money(taxaCartao)}</div><div class="kl">Despesa de cartão (parcelamento)</div></button>
       <button class="kpi" data-kpi="pagofornecedor"><div class="kv num" style="color:var(--danger);">R$ ${money(pagoFornecedor)}</div><div class="kl">Pago a fornecedores</div></button>
+      <button class="kpi" data-kpi="comissao" style="grid-column:1/3;"><div class="kv num" style="color:var(--teal);">R$ ${money(comissaoTotal)}</div><div class="kl">Comissão de pintor no mês</div></button>
     </div>
   </div>
   ${Object.keys(porFornecedor).length>0 ? `
@@ -1801,19 +1934,46 @@ function renderFinanceiro(){
       </div>`).join('')}
     `).join('')}
   </div>` : ''}
+  ${pendentesComissao.length>0 ? `
+  <div class="card">
+    <div class="eyebrow">🎨 Comissões de pintor pendentes</div>
+    <div class="list-row" style="align-items:flex-start;">
+      <div class="info"><b>Total pendente</b><span>${pendentesComissao.length} pedido${pendentesComissao.length>1?'s':''}</span></div>
+      <div style="text-align:right;">
+        <div style="font-weight:700; color:var(--danger); margin-bottom:6px;">R$ ${money(totalComissaoPendente)}</div>
+        <button class="btn-sm btn-success" data-act="pagartudocomissao">Marcar tudo pago</button>
+      </div>
+    </div>
+    ${pendentesComissao.map(p=>`
+    <div class="list-row" style="padding-left:10px; font-size:13px;">
+      <div class="info"><span>${p.numero?`Nº ${escapeHtml(p.numero)}`:'Pedido'} — ${escapeHtml(p.clientName||'')}</span></div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="num">R$ ${money(p.comissaoPintor)}</span>
+        <button class="btn-sm btn-ghost" data-act="pagarcomissaounica" data-pedido="${p.id}">Pago</button>
+      </div>
+    </div>`).join('')}
+  </div>` : ''}
   `;
 }
 function wireFinanceiro(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-subtab]').forEach(btn=> btn.addEventListener('click', ()=>{ state.financeiroSubTab = btn.dataset.subtab; render(); }));
+  const sub = state.financeiroSubTab || 'geral';
+  if(sub==='relatorios'){ wireFinanceiroRelatorios(); return; }
+  wireFinanceiroGeral();
+}
+function wireFinanceiroGeral(){
   const app = document.getElementById('app');
   const fm = financeiroMesAtual();
   const fd = financeiroKpiData();
   const fKpiMap = {
     gasto: { title:'Gasto com material', list: fd.doMes },
-    lucro: { title:'Lucro no mês', list: fd.doMes },
+    lucro: { title:'Lucro líquido no mês', list: fd.doMes },
     recebido: { title:'Já recebido', list: fd.recebidosList },
     areceber: { title:'Ainda a receber', list: fd.aReceberList },
     cartao: { title:'Despesa de cartão (parcelamento)', list: fd.cartaoList },
-    pagofornecedor: { title:'Pago a fornecedores', list: fd.pagoFornecedorList }
+    pagofornecedor: { title:'Pago a fornecedores', list: fd.pagoFornecedorList },
+    comissao: { title:'Comissão de pintor no mês', list: fd.comissaoList }
   };
   app.querySelectorAll('[data-kpi]').forEach(el=> el.addEventListener('click', ()=>{
     const info = fKpiMap[el.dataset.kpi];
@@ -1838,6 +1998,404 @@ function wireFinanceiro(){
     });
     const ok = await savePedidos(); if(ok) toast('Todos marcados como pagos'); render();
   }));
+  app.querySelectorAll('[data-act=pagarcomissaounica]').forEach(btn=> btn.addEventListener('click', async ()=>{
+    const p = state.pedidos.find(x=>x.id===btn.dataset.pedido);
+    if(p){ p.comissaoPaga = true; const ok = await savePedidos(); if(ok) toast('Comissão marcada como paga'); render(); }
+  }));
+  const pagarTudoComissao = app.querySelector('[data-act=pagartudocomissao]'); if(pagarTudoComissao) pagarTudoComissao.addEventListener('click', async ()=>{
+    state.pedidos.forEach(p=>{ if(p.status!=='orcamento' && p.status!=='cancelado' && parseNum(p.comissaoPintor)>0 && !p.comissaoPaga) p.comissaoPaga = true; });
+    const ok = await savePedidos(); if(ok) toast('Todas as comissões marcadas como pagas'); render();
+  });
+}
+
+/* ================= RELATÓRIOS ================= */
+function periodoLabelTexto(dataIni, dataFim){
+  const fmt = s=> s ? new Date(s+'T00:00:00').toLocaleDateString('pt-BR') : null;
+  const i = fmt(dataIni), f = fmt(dataFim);
+  if(i && f) return `${i} até ${f}`;
+  if(i) return `a partir de ${i}`;
+  if(f) return `até ${f}`;
+  return 'todos os pedidos';
+}
+function relatorioPedidosNoPeriodo(dataIniStr, dataFimStr){
+  const ini = dataIniStr ? new Date(dataIniStr+'T00:00:00') : null;
+  const fim = dataFimStr ? new Date(dataFimStr+'T23:59:59') : null;
+  return state.pedidos.filter(p=>{
+    if(p.status==='orcamento' || p.status==='cancelado') return false;
+    const mf = mesFechamentoPedido(p);
+    const ref = new Date(mf.ano, mf.mes, 1);
+    if(ini && ref<ini) return false;
+    if(fim && ref>fim) return false;
+    return true;
+  }).sort((a,b)=> new Date(a.createdAt)-new Date(b.createdAt));
+}
+function relatorioLinhaPedido(p, campos){
+  const linha = {
+    'Data': new Date(p.createdAt).toLocaleDateString('pt-BR'),
+    'Nº': p.numero||'',
+    'Cliente': p.clientName||'',
+    'Valor': p.total||0,
+    'Status pagamento': p.pago?'Pago':'Em aberto'
+  };
+  if(campos.custo) linha['Custo material'] = p.custoTotal||0;
+  if(campos.lucro) linha['Lucro (margem)'] = p.margem||0;
+  if(campos.comissao){
+    linha['Comissão pintor'] = p.comissaoPintor||0;
+    linha['Comissão paga'] = parseNum(p.comissaoPintor)>0 ? (p.comissaoPaga?'Sim':'Não') : '';
+  }
+  if(campos.lucro && campos.comissao) linha['Lucro líquido'] = (p.margem||0)-(p.comissaoPintor||0);
+  if(campos.fornecedor){
+    linha['Valor fornecedor'] = p.valorFornecedor||0;
+    linha['Fornecedor pago'] = parseNum(p.valorFornecedor)>0 ? (p.fornecedorPago?'Sim':'Não') : '';
+  }
+  return linha;
+}
+function relatorioResumo(pedidos, campos, periodoLabel){
+  const totalVendido = pedidos.reduce((s,p)=>s+(p.total||0),0);
+  const totalRecebido = pedidos.filter(p=>p.pago).reduce((s,p)=>s+(p.total||0),0);
+  const totalEmAberto = totalVendido-totalRecebido;
+  const resumo = [];
+  if(periodoLabel) resumo.push({label:'Período', value: periodoLabel});
+  resumo.push({label:'Quantidade de pedidos', value: String(pedidos.length)});
+  resumo.push({label:'Total vendido', value:'R$ '+money(totalVendido)});
+  resumo.push({label:'Total recebido', value:'R$ '+money(totalRecebido)});
+  resumo.push({label:'Total em aberto', value:'R$ '+money(totalEmAberto)});
+  if(campos.custo) resumo.push({label:'Total custo material', value:'R$ '+money(pedidos.reduce((s,p)=>s+(p.custoTotal||0),0))});
+  if(campos.lucro) resumo.push({label:'Total lucro (margem)', value:'R$ '+money(pedidos.reduce((s,p)=>s+(p.margem||0),0))});
+  if(campos.comissao) resumo.push({label:'Total comissão de pintor', value:'R$ '+money(pedidos.reduce((s,p)=>s+(p.comissaoPintor||0),0))});
+  if(campos.lucro && campos.comissao) resumo.push({label:'Lucro líquido (após comissão)', value:'R$ '+money(pedidos.reduce((s,p)=>s+(p.margem||0)-(p.comissaoPintor||0),0))});
+  if(campos.fornecedor) resumo.push({label:'Total a pagar fornecedores', value:'R$ '+money(pedidos.reduce((s,p)=>s+parseNum(p.valorFornecedor||0),0))});
+  return resumo;
+}
+function gerarRelatorioExcel(pedidos, campos, dataIni, dataFim){
+  if(typeof XLSX === 'undefined'){ toast('Não consegui carregar o Excel — verifique a internet e tente de novo'); return; }
+  const periodoLabel = periodoLabelTexto(dataIni, dataFim);
+  const resumo = relatorioResumo(pedidos, campos, periodoLabel);
+  const resumoRows = resumo.map(r=>({ Campo:r.label, Valor:r.value }));
+  const linhas = pedidos.map(p=>relatorioLinhaPedido(p, campos));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumoRows), 'Resumo');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), 'Pedidos');
+  if(campos.materiais){
+    const itensRows = [];
+    pedidos.forEach(p=>{
+      (p.sections||[]).forEach(sec=>{
+        sec.items.forEach(it=>{
+          itensRows.push({
+            'Pedido Nº': p.numero||'',
+            'Cliente': p.clientName||'',
+            'Fase': sec.title,
+            'Produto': it.name,
+            'Quantidade': parseNum(it.qty),
+            'Valor unitário': parseNum(it.price),
+            'Valor total': parseNum(it.qty)*parseNum(it.price)
+          });
+        });
+      });
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(itensRows), 'Materiais');
+  }
+  const filename = `relatorio-vendas-${dataIni||'inicio'}_a_${dataFim||'hoje'}.xlsx`;
+  try{ XLSX.writeFile(wb, filename); toast('Relatório exportado!'); }
+  catch(e){ toast('Não consegui exportar agora, tenta de novo'); }
+}
+function relatorioBaixarPdfBlob(doc, filename){
+  const blob = doc.output('blob');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=filename; a.rel='noopener'; a.style.display='none';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1500);
+  toast('Relatório em PDF baixado!');
+}
+async function gerarRelatorioPdf(pedidos, campos, dataIni, dataFim){
+  await librariesReady;
+  const cfg = state.config;
+  const { jsPDF } = window.jspdf;
+  const colCount = 5 + (campos.custo?1:0) + (campos.lucro?1:0) + (campos.lucro&&campos.comissao?1:0) + (campos.comissao?2:0) + (campos.fornecedor?2:0);
+  const landscape = !campos.materiais && colCount>7;
+  const doc = new jsPDF({ unit:'mm', format:'a4', orientation: landscape?'l':'p' });
+  const pageWidth = landscape?297:210, pageHeight = landscape?210:297;
+  const marginX=12, rightX=pageWidth-marginX;
+  let y=16;
+  const periodoLabel = periodoLabelTexto(dataIni, dataFim);
+
+  function footer(){
+    doc.setDrawColor(220,220,220); doc.setLineWidth(0.2);
+    doc.line(marginX,pageHeight-11,rightX,pageHeight-11);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(110,110,110);
+    doc.text((cfg.empresa||'Relatório').toUpperCase(),marginX,pageHeight-6);
+    doc.text('Relatório de vendas · '+periodoLabel,pageWidth/2,pageHeight-6,{align:'center'});
+    doc.text(String(doc.getNumberOfPages()),rightX,pageHeight-6,{align:'right'});
+  }
+  function novaPagina(){ footer(); doc.addPage(); y=16; }
+  function ensureSpace(h){ if(y+h>pageHeight-16) novaPagina(); }
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(15,60,82);
+  doc.text((cfg.empresa||'Relatório').toUpperCase(), marginX, y);
+  y+=7;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,80,80);
+  doc.text('Relatório de vendas — período: '+periodoLabel, marginX, y);
+  y+=8;
+
+  const resumo = relatorioResumo(pedidos, campos);
+  doc.setFillColor(238,241,242); doc.setDrawColor(215,220,222);
+  const resumoH = 8 + Math.ceil(resumo.length/2)*5.5;
+  doc.roundedRect(marginX,y,rightX-marginX,resumoH,2,2,'FD');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(45,45,45);
+  doc.text('RESUMO DO PERÍODO', marginX+4, y+5.5);
+  const colW2 = (rightX-marginX-8)/2;
+  resumo.forEach((r,i)=>{
+    const col = i%2, row = Math.floor(i/2);
+    const rx = marginX+4+col*colW2;
+    const ry = y+11+row*5.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.3); doc.setTextColor(90,90,90); doc.text(r.label+':', rx, ry);
+    doc.setFont('helvetica','bold'); doc.setTextColor(30,30,30); doc.text(String(r.value), rx+colW2*0.55, ry);
+  });
+  y += resumoH + 8;
+
+  if(campos.materiais){
+    pedidos.forEach(p=>{
+      ensureSpace(16);
+      doc.setFillColor(220,229,232);
+      doc.roundedRect(marginX,y,rightX-marginX,7,1.5,1.5,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(43,42,40);
+      const statusTxt = p.pago?'PAGO':'EM ABERTO';
+      doc.text(`${p.numero?'Nº '+p.numero+' — ':''}${upper(p.clientName||'')}`, marginX+3, y+4.8);
+      doc.text(`${new Date(p.createdAt).toLocaleDateString('pt-BR')} · R$ ${money(p.total)} · ${statusTxt}`, rightX-3, y+4.8, {align:'right'});
+      y+=9;
+      const linhaExtra = [];
+      if(campos.custo) linhaExtra.push('Custo: R$ '+money(p.custoTotal||0));
+      if(campos.lucro) linhaExtra.push('Lucro: R$ '+money(p.margem||0));
+      if(campos.lucro && campos.comissao) linhaExtra.push('Lucro líquido: R$ '+money((p.margem||0)-(p.comissaoPintor||0)));
+      if(campos.comissao) linhaExtra.push('Comissão: R$ '+money(p.comissaoPintor||0)+' ('+(p.comissaoPaga?'paga':'pendente')+')');
+      if(campos.fornecedor) linhaExtra.push('Fornecedor: R$ '+money(p.valorFornecedor||0)+' ('+(p.fornecedorPago?'pago':'pendente')+')');
+      if(linhaExtra.length){
+        ensureSpace(5);
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.8); doc.setTextColor(90,90,90);
+        doc.text(linhaExtra.join('   ·   '), marginX+3, y);
+        y+=5;
+      }
+      (p.sections||[]).forEach(sec=>{
+        sec.items.forEach(it=>{
+          ensureSpace(5);
+          doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
+          const qty=parseNum(it.qty), price=parseNum(it.price), linha=qty*price;
+          doc.text(upper(it.name), marginX+6, y);
+          doc.text(String(qty), marginX+(rightX-marginX)*0.62, y, {align:'right'});
+          doc.text('R$ '+money(linha), rightX-3, y, {align:'right'});
+          y+=4.2;
+        });
+      });
+      y+=4;
+    });
+  } else {
+    const headers = ['Data','Nº','Cliente','Valor','Status'];
+    if(campos.custo) headers.push('Custo');
+    if(campos.lucro) headers.push('Lucro');
+    if(campos.lucro && campos.comissao) headers.push('Lucro líq.');
+    if(campos.comissao){ headers.push('Comissão'); headers.push('Com. paga'); }
+    if(campos.fornecedor){ headers.push('Fornecedor'); headers.push('Forn. pago'); }
+    const colW = (rightX-marginX)/headers.length;
+    function desenhaCabecalho(){
+      doc.setFillColor(244,244,244); doc.rect(marginX,y,rightX-marginX,6,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(90,90,90);
+      headers.forEach((h,i)=>{ doc.text(h, marginX+i*colW+2, y+4.1); });
+      y+=7;
+    }
+    ensureSpace(14);
+    desenhaCabecalho();
+    pedidos.forEach(p=>{
+      ensureSpace(6);
+      const linha = [
+        new Date(p.createdAt).toLocaleDateString('pt-BR'),
+        String(p.numero||''), (p.clientName||'').slice(0,18),
+        'R$ '+money(p.total), p.pago?'Pago':'Aberto'
+      ];
+      if(campos.custo) linha.push('R$ '+money(p.custoTotal||0));
+      if(campos.lucro) linha.push('R$ '+money(p.margem||0));
+      if(campos.lucro && campos.comissao) linha.push('R$ '+money((p.margem||0)-(p.comissaoPintor||0)));
+      if(campos.comissao){ linha.push('R$ '+money(p.comissaoPintor||0)); linha.push(parseNum(p.comissaoPintor)>0?(p.comissaoPaga?'Sim':'Não'):'—'); }
+      if(campos.fornecedor){ linha.push('R$ '+money(p.valorFornecedor||0)); linha.push(parseNum(p.valorFornecedor)>0?(p.fornecedorPago?'Sim':'Não'):'—'); }
+      doc.setFont('helvetica','normal'); doc.setFontSize(7.3); doc.setTextColor(43,42,40);
+      linha.forEach((val,i)=>{ doc.text(String(val), marginX+i*colW+2, y); });
+      doc.setDrawColor(230); doc.setLineWidth(0.15); doc.line(marginX,y+1.6,rightX,y+1.6);
+      y+=5;
+    });
+  }
+
+  footer();
+  relatorioBaixarPdfBlob(doc, `relatorio-vendas-${dataIni||'inicio'}_a_${dataFim||'hoje'}.pdf`);
+}
+function relatorioFornecedorPedidos(dataIni, dataFim, fornecedor){
+  const pedidos = relatorioPedidosNoPeriodo(dataIni, dataFim).filter(p=>parseNum(p.valorFornecedor)>0);
+  if(!fornecedor) return pedidos;
+  return pedidos.filter(p=>fornecedorDoPedido(p)===fornecedor);
+}
+function gerarRelatorioFornecedorExcel(dataIni, dataFim, fornecedor){
+  if(typeof XLSX === 'undefined'){ toast('Não consegui carregar o Excel — verifique a internet e tente de novo'); return; }
+  const pedidos = relatorioFornecedorPedidos(dataIni, dataFim, fornecedor);
+  if(!pedidos.length){ toast('Nenhum pedido com valor de fornecedor nesse período'); return; }
+  const totalPagar = pedidos.reduce((s,p)=>s+parseNum(p.valorFornecedor),0);
+  const rows = pedidos.map(p=>({
+    'Data': new Date(p.createdAt).toLocaleDateString('pt-BR'),
+    'Pedido Nº': p.numero||'',
+    'Cliente': p.clientName||'',
+    'Fornecedor': fornecedorDoPedido(p),
+    'Valor a pagar': parseNum(p.valorFornecedor),
+    'Situação': p.fornecedorPago?'Pago':'Pendente'
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([
+    {Campo:'Fornecedor',Valor:fornecedor||'Todos'},
+    {Campo:'Período',Valor:periodoLabelTexto(dataIni,dataFim)},
+    {Campo:'Total a pagar',Valor:'R$ '+money(totalPagar)},
+    {Campo:'Quantidade de pedidos',Valor:String(pedidos.length)}
+  ]), 'Resumo');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Pedidos');
+  const filename = `relatorio-fornecedor-${(fornecedor||'todos').replace(/[^a-z0-9]+/gi,'-').toLowerCase()}.xlsx`;
+  try{ XLSX.writeFile(wb, filename); toast('Relatório exportado!'); }
+  catch(e){ toast('Não consegui exportar agora, tenta de novo'); }
+}
+async function gerarRelatorioFornecedorPdf(dataIni, dataFim, fornecedor){
+  await librariesReady;
+  const pedidos = relatorioFornecedorPedidos(dataIni, dataFim, fornecedor);
+  if(!pedidos.length){ toast('Nenhum pedido com valor de fornecedor nesse período'); return; }
+  const cfg = state.config;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const marginX=12, pageWidth=210, pageHeight=297, rightX=pageWidth-marginX;
+  let y=16;
+  function footer(){
+    doc.setDrawColor(220,220,220); doc.setLineWidth(0.2);
+    doc.line(marginX,286,rightX,286);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(110,110,110);
+    doc.text((cfg.empresa||'Relatório').toUpperCase(),marginX,291);
+    doc.text('Relatório por fornecedor',pageWidth/2,291,{align:'center'});
+    doc.text(String(doc.getNumberOfPages()),rightX,291,{align:'right'});
+  }
+  function novaPagina(){ footer(); doc.addPage(); y=16; }
+  function ensureSpace(h){ if(y+h>278) novaPagina(); }
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(15,60,82);
+  doc.text((cfg.empresa||'Relatório').toUpperCase(), marginX, y); y+=7;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,80,80);
+  doc.text('Relatório por fornecedor: '+(fornecedor||'Todos os fornecedores'), marginX, y); y+=5;
+  doc.text('Período: '+periodoLabelTexto(dataIni,dataFim), marginX, y); y+=8;
+
+  const totalPagar = pedidos.reduce((s,p)=>s+parseNum(p.valorFornecedor),0);
+  doc.setFillColor(238,241,242); doc.setDrawColor(215,220,222);
+  doc.roundedRect(marginX,y,rightX-marginX,16,2,2,'FD');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(45,45,45);
+  doc.text('Total a pagar: R$ '+money(totalPagar), marginX+4, y+6.5);
+  doc.text('Pedidos: '+pedidos.length, marginX+4, y+12);
+  y+=22;
+
+  doc.setFillColor(244,244,244); doc.rect(marginX,y,rightX-marginX,6,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(90,90,90);
+  doc.text('DATA', marginX+2, y+4.1);
+  doc.text('PEDIDO', marginX+30, y+4.1);
+  doc.text('CLIENTE', marginX+58, y+4.1);
+  doc.text('FORNECEDOR', marginX+110, y+4.1);
+  doc.text('VALOR', rightX-30, y+4.1, {align:'right'});
+  doc.text('SITUAÇÃO', rightX-2, y+4.1, {align:'right'});
+  y+=7;
+
+  pedidos.forEach(p=>{
+    ensureSpace(6);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.6); doc.setTextColor(43,42,40);
+    doc.text(new Date(p.createdAt).toLocaleDateString('pt-BR'), marginX+2, y);
+    doc.text(String(p.numero||''), marginX+30, y);
+    doc.text((p.clientName||'').slice(0,22), marginX+58, y);
+    doc.text(fornecedorDoPedido(p).slice(0,18), marginX+110, y);
+    doc.text('R$ '+money(p.valorFornecedor), rightX-30, y, {align:'right'});
+    doc.text(p.fornecedorPago?'Pago':'Pendente', rightX-2, y, {align:'right'});
+    doc.setDrawColor(230); doc.setLineWidth(0.15); doc.line(marginX,y+1.6,rightX,y+1.6);
+    y+=5.2;
+  });
+
+  footer();
+  relatorioBaixarPdfBlob(doc, `relatorio-fornecedor-${(fornecedor||'todos').replace(/[^a-z0-9]+/gi,'-').toLowerCase()}.pdf`);
+}
+function renderFinanceiroRelatorios(){
+  const rc = state.config.relatorioCampos || {};
+  const hoje = new Date();
+  const iniPadrao = state.relatorioDataIni || `${hoje.getFullYear()}-${String(hoje.getMonth()+1).padStart(2,'0')}-01`;
+  const fimPadrao = state.relatorioDataFim || todayStr();
+  return `
+    <div class="card">
+      <div class="eyebrow">Período</div>
+      <div class="row">
+        <div class="field" style="margin-bottom:0;"><label>De</label><input type="date" id="relDataIni" value="${iniPadrao}"></div>
+        <div class="field" style="margin-bottom:0;"><label>Até</label><input type="date" id="relDataFim" value="${fimPadrao}"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="eyebrow">Campos do relatório</div>
+      <p class="muted" style="margin-top:-4px;">Data, número, cliente, valor e status de pagamento sempre aparecem.</p>
+      <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoCusto" ${rc.custo?'checked':''}> Custo do material</label></div>
+      <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoLucro" ${rc.lucro?'checked':''}> Lucro (margem)</label></div>
+      <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoComissao" ${rc.comissao?'checked':''}> Comissão de pintor</label></div>
+      <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoFornecedor" ${rc.fornecedor?'checked':''}> Valor a pagar fornecedor</label></div>
+      <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoMateriais" ${rc.materiais?'checked':''}> Lista de materiais de cada pedido</label></div>
+    </div>
+    <div class="row">
+      <button class="btn-primary btn-block btn-lg" data-act="relGerarPdf">📄 Gerar PDF</button>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn-secondary btn-block btn-lg" data-act="relGerarExcel">📊 Gerar Excel</button>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <div class="eyebrow">Relatório por fornecedor (separado)</div>
+      <p class="muted" style="margin-top:-4px;">Pedidos com valor a pagar, agrupados pelo fornecedor predominante de cada um — usa o mesmo período acima.</p>
+      <div class="field"><label>Fornecedor</label><select id="relFornecedorSelect"><option value="">Todos os fornecedores</option>${state.config.fornecedores.map(f=>`<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join('')}</select></div>
+      <div class="row">
+        <button class="btn-secondary btn-block" data-act="relFornecedorPdf">📄 PDF por fornecedor</button>
+        <button class="btn-ghost btn-block" data-act="relFornecedorExcel">📊 Excel por fornecedor</button>
+      </div>
+    </div>
+  `;
+}
+function wireFinanceiroRelatorios(){
+  const app = document.getElementById('app');
+  const readCampos = ()=>({
+    custo: document.getElementById('relCampoCusto').checked,
+    lucro: document.getElementById('relCampoLucro').checked,
+    comissao: document.getElementById('relCampoComissao').checked,
+    fornecedor: document.getElementById('relCampoFornecedor').checked,
+    materiais: document.getElementById('relCampoMateriais').checked
+  });
+  const persistCampos = async ()=>{ state.config.relatorioCampos = readCampos(); await saveConfig(); };
+  ['relCampoCusto','relCampoLucro','relCampoComissao','relCampoFornecedor','relCampoMateriais'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.addEventListener('change', persistCampos);
+  });
+  const iniEl = document.getElementById('relDataIni'); if(iniEl) iniEl.addEventListener('change', e=> state.relatorioDataIni = e.target.value);
+  const fimEl = document.getElementById('relDataFim'); if(fimEl) fimEl.addEventListener('change', e=> state.relatorioDataFim = e.target.value);
+
+  const btnPdf = app.querySelector('[data-act=relGerarPdf]'); if(btnPdf) btnPdf.addEventListener('click', async ()=>{
+    const campos = readCampos(); await persistCampos();
+    const dataIni = document.getElementById('relDataIni').value, dataFim = document.getElementById('relDataFim').value;
+    const pedidos = relatorioPedidosNoPeriodo(dataIni, dataFim);
+    if(!pedidos.length){ toast('Nenhum pedido encontrado nesse período'); return; }
+    await gerarRelatorioPdf(pedidos, campos, dataIni, dataFim);
+  });
+  const btnExcel = app.querySelector('[data-act=relGerarExcel]'); if(btnExcel) btnExcel.addEventListener('click', async ()=>{
+    const campos = readCampos(); await persistCampos();
+    const dataIni = document.getElementById('relDataIni').value, dataFim = document.getElementById('relDataFim').value;
+    const pedidos = relatorioPedidosNoPeriodo(dataIni, dataFim);
+    if(!pedidos.length){ toast('Nenhum pedido encontrado nesse período'); return; }
+    gerarRelatorioExcel(pedidos, campos, dataIni, dataFim);
+  });
+  const btnFornPdf = app.querySelector('[data-act=relFornecedorPdf]'); if(btnFornPdf) btnFornPdf.addEventListener('click', async ()=>{
+    const dataIni = document.getElementById('relDataIni').value, dataFim = document.getElementById('relDataFim').value;
+    const forn = document.getElementById('relFornecedorSelect').value;
+    await gerarRelatorioFornecedorPdf(dataIni, dataFim, forn);
+  });
+  const btnFornExcel = app.querySelector('[data-act=relFornecedorExcel]'); if(btnFornExcel) btnFornExcel.addEventListener('click', ()=>{
+    const dataIni = document.getElementById('relDataIni').value, dataFim = document.getElementById('relDataFim').value;
+    const forn = document.getElementById('relFornecedorSelect').value;
+    gerarRelatorioFornecedorExcel(dataIni, dataFim, forn);
+  });
 }
 
 /* ================= PRODUTOS ================= */
@@ -2329,7 +2887,7 @@ function pdfProducaoHtmlFor(pedido){
       <div class="production-info-title">DADOS DO PEDIDO</div>
       <div><b>Pedido:</b> ${escapeHtml(pedido.numero||'—')} &nbsp; · &nbsp; <b>Data:</b> ${dataHoje}</div>
       <div style="margin-top:2px;"><b>Cliente (referência):</b> ${escapeHtml(upper(pedido.clientName||'—'))}</div>
-      <div style="margin-top:2px;"><b>Prazo:</b> ${pedido.prazoDias||5} dias úteis a partir da conversão em pedido${inst?` &nbsp; · &nbsp; <b>Parcelamento:</b> ${inst.vezes}x`:''}</div>
+      <div style="margin-top:2px;"><b>Prazo:</b> ${pedido.prazoDias||5} dias úteis a partir da conversão em pedido &nbsp; · &nbsp; <b>Condição:</b> ${escapeHtml(condicaoPagamentoTexto(pedido.sections, pedido.parcelPercentRaw||0, inst))}</div>
     </div>
 
     <div class="production-items-title">MATERIAIS PARA PRODUÇÃO</div>
@@ -2344,7 +2902,7 @@ function pdfProducaoHtmlFor(pedido){
   `;
 }
 
-function pdfHtmlFor(clienteNome, clienteTel, tabelaLabel, sections, subtotal, pctRaw, descontoVal, cardOn, cardVal, notaOn, notaVal, total, installLabel, numero){
+function pdfHtmlFor(clienteNome, clienteTel, tabelaLabel, sections, subtotal, pctRaw, descontoVal, cardOn, cardVal, notaOn, notaVal, total, installLabel, numero, observacoes){
   const cfg = state.config;
   pctRaw = pctRaw||0;
   const cliente = state.clients.find(c=>normSearch(c.name)===normSearch(clienteNome));
@@ -2399,16 +2957,20 @@ function pdfHtmlFor(clienteNome, clienteTel, tabelaLabel, sections, subtotal, pc
 
     <div class="pdf-pay-box">
       <b>Condições de pagamento</b>
-      ${installLabel?`<div style="margin-top:2px;">Parcelamento: ${escapeHtml(installLabel)}</div>`:''}
+      ${installLabel?`<div style="margin-top:2px;">Condição: ${escapeHtml(installLabel)}</div>`:''}
       ${pix?`<div style="margin-top:2px;">PIX: ${pix}</div>`:''}
     </div>
+    ${observacoes?`<div class="pdf-pay-box">
+      <b>Observações</b>
+      <div style="margin-top:2px; white-space:pre-wrap;">${escapeHtml(observacoes)}</div>
+    </div>` : ''}
 
     <div class="pdf-footer">${escapeHtml(upper(cfg.empresa||'ORÇAMENTO'))}${cfg.email?' · '+escapeHtml(cfg.email):''}<br>Documento gerado pelo sistema de orçamentos</div>
   `;
 }
 
 /* ---------------- geração de PDF (desenho direto com jsPDF, sem "fotografar" a tela) ---------------- */
-async function gerarPdfBlob(clienteNome, clienteTel, tabelaLabel, sections, subtotal, pctRaw, descontoVal, cardOn, cardVal, notaOn, notaVal, total, installLabel, numero){
+async function gerarPdfBlob(clienteNome, clienteTel, tabelaLabel, sections, subtotal, pctRaw, descontoVal, cardOn, cardVal, notaOn, notaVal, total, installLabel, numero, observacoes){
   await librariesReady;
   pctRaw = pctRaw||0;
   const cfg = state.config;
@@ -2572,8 +3134,21 @@ async function gerarPdfBlob(clienteNome, clienteTel, tabelaLabel, sections, subt
     doc.text('CONDIÇÕES DE PAGAMENTO',marginX,y);
     y+=4.5;
     doc.setFont('helvetica','normal'); doc.setFontSize(8.2); doc.setTextColor(80,80,80);
-    if(installLabel){ doc.text('Parcelamento: '+installLabel,marginX,y); y+=4.2; }
+    if(installLabel){ doc.text('Condição: '+installLabel,marginX,y); y+=4.2; }
     if(pix){ const pixLines=doc.splitTextToSize('PIX: '+pix, rightX-marginX); doc.text(pixLines,marginX,y); y+=pixLines.length*4.2; }
+  }
+
+  if(observacoes){
+    ensureSpace(16);
+    y+=2;
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(55,55,55);
+    doc.text('OBSERVAÇÕES',marginX,y);
+    y+=4.5;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.2); doc.setTextColor(80,80,80);
+    const obsLines = doc.splitTextToSize(observacoes, rightX-marginX);
+    ensureSpace(obsLines.length*4.2);
+    doc.text(obsLines,marginX,y);
+    y += obsLines.length*4.2;
   }
 
   footer();
@@ -2632,7 +3207,7 @@ async function gerarPdfProducaoBlob(pedido){
   doc.text('Data: '+dataHoje, rightX-4, y+12, {align:'right'});
   doc.text('Cliente (referência): '+(pedido.clientName||'—'), marginX+4, y+18);
   const inst = cfg.installments[pedido.installIdx];
-  doc.text('Prazo: '+(pedido.prazoDias||5)+' dias úteis a partir da conversão em pedido'+(inst?'  ·  Parcelamento: '+inst.vezes+'x':''), marginX+4, y+23);
+  doc.text('Prazo: '+(pedido.prazoDias||5)+' dias úteis a partir da conversão em pedido  ·  Condição: '+condicaoPagamentoTexto(pedido.sections, pedido.parcelPercentRaw||0, inst), marginX+4, y+23);
   y += 32;
 
   doc.setTextColor(43,42,40); doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
@@ -2788,6 +3363,12 @@ function mostrarPdfPreview(htmlContent, filename, clienteNome, clienteTel, pdfAr
   }));
 }
 
+function condicaoPagamentoTexto(sections, pctRaw, inst){
+  // só considera "parcelado" se existir taxa configurada E pelo menos uma fase estiver de fato marcada como "a prazo"
+  const usaParcelamento = (pctRaw||0) > 0 && (sections||[]).some(s=>s.parcelOn!==false);
+  if(usaParcelamento && inst) return `Parcelado em ${inst.vezes}x`;
+  return 'À vista';
+}
 function gerarEMostrarPdf(clienteNome, clienteTel, htmlContent, pdfArgs){
   const filename = `orcamento-${clienteNome.replace(/[^a-z0-9]+/gi,'-').toLowerCase()}.pdf`;
   mostrarPdfPreview(htmlContent, filename, clienteNome, clienteTel, pdfArgs);
@@ -2804,7 +3385,7 @@ async function gerarPDF(){
 
   const t = calcTotals(b);
   const inst = cfg.installments[b.installIdx];
-  const installLabel = inst ? `${inst.vezes}x` : '';
+  const installLabel = condicaoPagamentoTexto(b.sections, t.parcelPercentRaw, inst);
 
   // salva/atualiza como pedido (status orçamento, a menos que já esteja mais avançado) — feito antes pra já ter o número
   const pedido = buildPedidoFromBudget(b.editingId);
@@ -2812,8 +3393,8 @@ async function gerarPDF(){
   else state.pedidos.push(pedido);
   savePedidos();
 
-  const htmlContent = pdfHtmlFor(clienteNome, clienteTel, cfg.priceLabels[b.priceIdx], b.sections, t.subtotal, t.parcelPercentRaw, t.desconto, b.cardFee.on, t.card, b.notaFee.on, t.nota, t.total, installLabel, pedido.numero);
-  const pdfArgs = [clienteNome, clienteTel, cfg.priceLabels[b.priceIdx], b.sections, t.subtotal, t.parcelPercentRaw, t.desconto, b.cardFee.on, t.card, b.notaFee.on, t.nota, t.total, installLabel, pedido.numero];
+  const htmlContent = pdfHtmlFor(clienteNome, clienteTel, cfg.priceLabels[b.priceIdx], b.sections, t.subtotal, t.parcelPercentRaw, t.desconto, b.cardFee.on, t.card, b.notaFee.on, t.nota, t.total, installLabel, pedido.numero, pedido.observacoes);
+  const pdfArgs = [clienteNome, clienteTel, cfg.priceLabels[b.priceIdx], b.sections, t.subtotal, t.parcelPercentRaw, t.desconto, b.cardFee.on, t.card, b.notaFee.on, t.nota, t.total, installLabel, pedido.numero, pedido.observacoes];
 
   gerarEMostrarPdf(clienteNome, clienteTel, htmlContent, pdfArgs);
   state.budget = newBudget();
@@ -2823,7 +3404,7 @@ function gerarPDFdePedido(p){
   const cfg = state.config;
   const inst = cfg.installments[p.installIdx];
   const pctRaw = p.parcelPercentRaw||0;
-  const installLabel = inst ? `${inst.vezes}x` : '';
+  const installLabel = condicaoPagamentoTexto(p.sections, pctRaw, inst);
   const t = { subtotal:p.subtotal, desconto:0, card:0, nota:0, total:p.total };
   const base = p.subtotal;
   if(p.discount && p.discount.on){
@@ -2836,8 +3417,8 @@ function gerarPDFdePedido(p){
   const baseComDesconto = base - t.desconto;
   if(p.cardFee && p.cardFee.on) t.card = p.cardFee.type==='%' ? baseComDesconto*parseNum(p.cardFee.value)/100 : parseNum(p.cardFee.value);
   if(p.notaFee && p.notaFee.on) t.nota = p.notaFee.type==='%' ? baseComDesconto*parseNum(p.notaFee.value)/100 : parseNum(p.notaFee.value);
-  const htmlContent = pdfHtmlFor(p.clientName, p.clientPhone, cfg.priceLabels[p.priceIdx]||'', p.sections, p.subtotal, pctRaw, t.desconto, p.cardFee&&p.cardFee.on, t.card, p.notaFee&&p.notaFee.on, t.nota, p.total, installLabel, p.numero);
-  const pdfArgs = [p.clientName, p.clientPhone, cfg.priceLabels[p.priceIdx]||'', p.sections, p.subtotal, pctRaw, t.desconto, p.cardFee&&p.cardFee.on, t.card, p.notaFee&&p.notaFee.on, t.nota, p.total, installLabel, p.numero];
+  const htmlContent = pdfHtmlFor(p.clientName, p.clientPhone, cfg.priceLabels[p.priceIdx]||'', p.sections, p.subtotal, pctRaw, t.desconto, p.cardFee&&p.cardFee.on, t.card, p.notaFee&&p.notaFee.on, t.nota, p.total, installLabel, p.numero, p.observacoes);
+  const pdfArgs = [p.clientName, p.clientPhone, cfg.priceLabels[p.priceIdx]||'', p.sections, p.subtotal, pctRaw, t.desconto, p.cardFee&&p.cardFee.on, t.card, p.notaFee&&p.notaFee.on, t.nota, p.total, installLabel, p.numero, p.observacoes];
   gerarEMostrarPdf(p.clientName||'pedido', p.clientPhone, htmlContent, pdfArgs);
 }
 
