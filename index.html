@@ -1470,9 +1470,13 @@ function mesesDisponiveisPedidos(){
 const MES_NOMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
 /* ---------------- mês de fechamento financeiro (competência x caixa) ---------------- */
+function dataReferenciaVenda(p){
+  // o "mês da venda" padrão é quando o orçamento virou pedido, não quando o orçamento foi criado/salvo
+  return p.convertidoEmPedidoEm ? new Date(p.convertidoEmPedidoEm) : new Date(p.createdAt);
+}
 function mesFechamentoPedido(p){
   if(p.mesFechamento && typeof p.mesFechamento.ano==='number' && typeof p.mesFechamento.mes==='number') return p.mesFechamento;
-  const d = new Date(p.createdAt);
+  const d = dataReferenciaVenda(p);
   return { ano: d.getFullYear(), mes: d.getMonth() };
 }
 
@@ -1537,11 +1541,14 @@ function calcDescontoPedido(p){
 function renderPedidoDetalhe(){
   const p = state.pedidos.find(x=>x.id===state.pedidoAberto);
   if(!p) return `<div class="empty-state">Pedido não encontrado.</div>`;
-  const secsHtml = p.sections.map(sec=>`
+  const secsHtml = p.sections.map(sec=>{
+    const pct = sectionPct(sec, p.parcelPercentRaw||0);
+    return `
     <div style="margin-bottom:10px;">
       <div style="font-weight:700; font-size:13.5px; margin-bottom:4px;">${escapeHtml(sec.title)}</div>
-      ${sec.items.map(it=>`<div style="display:flex; justify-content:space-between; font-size:13.5px; padding:3px 0;"><span>${it.qty}x ${escapeHtml(it.name)}</span><span class="num">R$ ${money(parseNum(it.qty)*parseNum(it.price))}</span></div>`).join('')}
-    </div>`).join('');
+      ${sec.items.map(it=>`<div style="display:flex; justify-content:space-between; font-size:13.5px; padding:3px 0;"><span>${it.qty}x ${escapeHtml(it.name)}</span><span class="num">R$ ${money(parseNum(it.qty)*parseNum(it.price)*(1+pct/100))}</span></div>`).join('')}
+    </div>`;
+  }).join('');
 
   let actionBtn = '';
   if(['orcamento','pedido','entrega','a_receber'].includes(p.status)){
@@ -1698,7 +1705,7 @@ async function confirmarMesFechamento(p){
   };
 }
 function mesFechamentoModal(p){
-  const vd = new Date(p.createdAt);
+  const vd = dataReferenciaVenda(p);
   const vendaM = { ano: vd.getFullYear(), mes: vd.getMonth() };
   const hoje = new Date();
   const atualM = { ano: hoje.getFullYear(), mes: hoje.getMonth() };
@@ -2080,15 +2087,17 @@ function gerarRelatorioExcel(pedidos, campos, dataIni, dataFim){
     const itensRows = [];
     pedidos.forEach(p=>{
       (p.sections||[]).forEach(sec=>{
+        const pct = sectionPct(sec, p.parcelPercentRaw||0);
         sec.items.forEach(it=>{
+          const precoComAcrescimo = parseNum(it.price)*(1+pct/100);
           itensRows.push({
             'Pedido Nº': p.numero||'',
             'Cliente': p.clientName||'',
             'Fase': sec.title,
             'Produto': it.name,
             'Quantidade': parseNum(it.qty),
-            'Valor unitário': parseNum(it.price),
-            'Valor total': parseNum(it.qty)*parseNum(it.price)
+            'Valor unitário': precoComAcrescimo,
+            'Valor total': parseNum(it.qty)*precoComAcrescimo
           });
         });
       });
@@ -2177,10 +2186,11 @@ async function gerarRelatorioPdf(pedidos, campos, dataIni, dataFim){
         y+=5;
       }
       (p.sections||[]).forEach(sec=>{
+        const pctItem = sectionPct(sec, p.parcelPercentRaw||0);
         sec.items.forEach(it=>{
           ensureSpace(5);
           doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
-          const qty=parseNum(it.qty), price=parseNum(it.price), linha=qty*price;
+          const qty=parseNum(it.qty), price=parseNum(it.price)*(1+pctItem/100), linha=qty*price;
           doc.text(upper(it.name), marginX+6, y);
           doc.text(String(qty), marginX+(rightX-marginX)*0.62, y, {align:'right'});
           doc.text('R$ '+money(linha), rightX-3, y, {align:'right'});
@@ -2339,6 +2349,12 @@ function renderFinanceiroRelatorios(){
       <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoFornecedor" ${rc.fornecedor?'checked':''}> Valor a pagar fornecedor</label></div>
       <div class="fee-row"><label class="chk"><input type="checkbox" id="relCampoMateriais" ${rc.materiais?'checked':''}> Lista de materiais de cada pedido</label></div>
     </div>
+    <div class="card">
+      <div class="eyebrow">Resumo do período selecionado</div>
+      <div class="totals">
+        ${relatorioResumo(relatorioPedidosNoPeriodo(iniPadrao, fimPadrao), rc, periodoLabelTexto(iniPadrao, fimPadrao)).map(r=>`<div class="line"><span>${escapeHtml(r.label)}</span><span class="num" style="font-weight:700;">${escapeHtml(String(r.value))}</span></div>`).join('')}
+      </div>
+    </div>
     <div class="row">
       <button class="btn-primary btn-block btn-lg" data-act="relGerarPdf">📄 Gerar PDF</button>
     </div>
@@ -2365,12 +2381,12 @@ function wireFinanceiroRelatorios(){
     fornecedor: document.getElementById('relCampoFornecedor').checked,
     materiais: document.getElementById('relCampoMateriais').checked
   });
-  const persistCampos = async ()=>{ state.config.relatorioCampos = readCampos(); await saveConfig(); };
+  const persistCampos = async ()=>{ state.config.relatorioCampos = readCampos(); await saveConfig(); render(); };
   ['relCampoCusto','relCampoLucro','relCampoComissao','relCampoFornecedor','relCampoMateriais'].forEach(id=>{
     const el = document.getElementById(id); if(el) el.addEventListener('change', persistCampos);
   });
-  const iniEl = document.getElementById('relDataIni'); if(iniEl) iniEl.addEventListener('change', e=> state.relatorioDataIni = e.target.value);
-  const fimEl = document.getElementById('relDataFim'); if(fimEl) fimEl.addEventListener('change', e=> state.relatorioDataFim = e.target.value);
+  const iniEl = document.getElementById('relDataIni'); if(iniEl) iniEl.addEventListener('change', e=>{ state.relatorioDataIni = e.target.value; render(); });
+  const fimEl = document.getElementById('relDataFim'); if(fimEl) fimEl.addEventListener('change', e=>{ state.relatorioDataFim = e.target.value; render(); });
 
   const btnPdf = app.querySelector('[data-act=relGerarPdf]'); if(btnPdf) btnPdf.addEventListener('click', async ()=>{
     const campos = readCampos(); await persistCampos();
